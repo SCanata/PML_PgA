@@ -1,0 +1,229 @@
+---
+title: "Predicting Barbell Lift Form Using Wearable Sensor Data"
+author: "S Canata"
+date: "`r Sys.Date()`"
+output: html_document
+---
+# Introduction    
+
+This work is the final assignment for the Practical Machine Learning course.
+
+
+
+```{r,warning=FALSE,message=FALSE,include=FALSE,echo=FALSE}
+# loading libraries
+# if the below libraries are not installed in your system, please install them
+
+library(dplyr)
+library(ggplot2)
+library(DT)
+library(caret)
+library(knitr)
+library(corrplot)
+library(plotly)
+library(correlationfunnel)
+library(GGally)
+library(e1071)
+```
+
+
+# Data   
+
+## Loading  
+
+Let's load the data. For reproducibility matter, we will directly download them from the given link. This way we also are able to work on updated files in the future.
+
+```{r}
+trainUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+training_data <- read.csv(url(trainUrl), na.strings=c("NA","#DIV/0!",""))
+testing_data <- read.csv(url(testUrl), na.strings=c("NA","#DIV/0!",""))
+
+dim(training_data); dim(testing_data)
+```
+
+# Cleaning the Data
+
+Removing unnecessary variables. 
+```{r}
+training_data <- training_data[,colMeans(is.na(training_data)) < .9] #removing mostly na columns
+
+training_data <- training_data[complete.cases(training_data[, c("classe")]), ] #removing na in the predictor column
+
+testing_data <- testing_data[,colMeans(is.na(testing_data)) < .9] #removing mostly na columns
+
+training_data   <-training_data[,-c(1:7)]
+testing_data <-testing_data[,-c(1:7)]
+```
+  
+```{r nzv}
+nvz <- nearZeroVar(training_data)
+training_data <- training_data[,-nvz]
+dim(training_data)
+```
+
+
+Let's create a validation for model tuning:  
+
+```{r}
+#for reproducability
+set.seed(123)
+
+inTrain <- createDataPartition(training_data$classe, p = 0.8, list = F)
+dfVal <- training_data[-inTrain,]
+dfTrain <- training_data[inTrain,]
+dim(dfTrain); dim(dfVal)
+```
+  
+Now the partition of our data is ready, lets dive into analysis by looking at the proportion of different "classe":
+
+```{r}
+table(dfTrain$classe)/nrow(dfTrain)
+```
+  
+From the above it is clear that there are not that much bias in the data in term of different "classe".  
+
+# Modelling  
+
+In the above section we have narrowed down to 17 predictors and also we have decided to use 3 preprocessing steps. In this section we will build on the analyzed data to create models for prediction. We will use Classification tree, Random Forest, Generalized Linear regression and SVM , them we will stack it with a Random forest to get the final model.  
+
+```{r}
+dfTrain[,1:17] <- sapply(dfTrain[,1:17],as.numeric)
+dfVal[,1:17] <- sapply(dfVal[,1:17],as.numeric)
+
+dfTrain <- dfTrain[,colMeans(is.na(dfTrain)) < .9] #removing mostly na columns
+dfVal <- dfVal[,colMeans(is.na(dfVal)) < .9] #removing mostly na columns
+
+levels <- c("A", "B", "C", "D", "E")
+
+preprop_obj <- preProcess(dfTrain[,-18],method = c("center","scale","BoxCox"))
+xTrain <- predict(preprop_obj,select(dfTrain,-classe))
+yTrain <- factor(dfTrain$classe,levels=levels)
+xVal <- predict(preprop_obj,select(dfVal,-classe))
+yVal <- factor(dfVal$classe,levels=levels)
+
+trControl <- trainControl(method="cv", number=5)
+
+#CFtree
+modelCT <- train(x = xTrain,y = yTrain, 
+                 method = "rpart", trControl = trControl)
+
+#RF
+modelRF <- train(x = xTrain,y = yTrain, 
+                 method = "rf", trControl = trControl,verbose=FALSE, metric = "Accuracy")
+
+#GBM
+#taking too long
+modelGBM <- train(x = xTrain,y = yTrain, 
+                  method = "gbm",trControl=trControl, verbose=FALSE)
+
+#SVM
+modelSVM <- svm(x = xTrain,y = yTrain,
+                kernel = "polynomial", cost = 10)
+
+```
+
+Let's look the results:  
+
+## Classification Tree  
+
+```{r}
+confusionMatrix(predict(modelCT,xVal),yVal)
+```
+
+Clearly Classification tree is not performing well, accuracy is very low. One thing to note here is that True classe_A are detected with high accuracy, but other classe are incorrectly predicted as classe_A.  
+
+## Random Forest  
+
+```{r}
+confusionMatrix(predict(modelRF,xVal),yVal)
+```
+
+
+## GBM  
+
+```{r}
+confusionMatrix(predict(modelGBM,xVal),yVal)
+```
+
+## SVM  
+
+```{r}
+confusionMatrix(predict(modelSVM,xVal),yVal)
+```
+
+We can see that the last 3 models have over 90%, taking this into account we will run predictions on all three of them.
+
+# Results  
+
+Now we run all three methods to apply to the coursera project.
+
+```{r}
+dfTest <- testing_data 
+
+xTest <- dfTest[, !(names(dfTest) %in% "problem_id")]
+
+
+xTest[,1:17] <- sapply(xTest[,1:17],as.numeric)
+
+
+xTest <- xTest[,colMeans(is.na(xTest)) < .9] #removing mostly na columns
+
+  
+result <- data.frame("problem_id" = testing_data$problem_id,
+                     "PREDICTION_RF" = predict(modelRF,xTest),
+                     "PREDICTION_GBM" = predict(modelGBM,xTest),
+                     "PREDICTION_SVM" = predict(modelSVM,xTest))
+
+result
+```
+
+# Very bad Assessments Results  
+
+My validation accuracy is good but the score in the exam was awful. I'll train one more RF with all the data and see if it helps. This has also been done by other students as review in peer-grading.
+
+So for this itteration I will use all the predictors. And as there are so many columns I'll make it parallel so it doesnot take that long.  
+
+```{r}
+
+
+xTrain2 <- dfTrain %>% select(-classe)
+yTrain2 <- factor(dfTrain$classe,levels=levels)  
+
+
+xVal2 <- dfVal %>% select(-classe)
+yVal2 <- factor(dfVal$classe,levels=levels) 
+
+
+
+xTest2 <- dfTest %>% select(-problem_id)
+pb_id <- dfVal$classe
+
+library(doParallel)
+
+ncores <- makeCluster(detectCores() - 1)
+registerDoParallel(cores=ncores)
+getDoParWorkers() 
+
+modelRF2 <- train(x = xTrain2,y = yTrain2, method = "rf", 
+                 metric = "Accuracy", 
+                 trControl=trainControl(method = "cv", number = 4, 
+                                        p= 0.60, allowParallel = TRUE ))
+
+
+```
+
+```{r}
+#Check the result
+
+result2 <- data.frame("problem_id" = testing_data$problem_id,
+                     "PREDICTION_RF" = predict(modelRF,xTest),
+                     "PREDICTION_GBM" = predict(modelGBM,xTest),
+                     "PREDICTION_SVM" = predict(modelSVM,xTest),
+                     "PREDICTION_RF2_ALL_COL"=predict(modelRF2,xTest2))
+
+result2
+```
+
+This time the results have 100% in the exam.
